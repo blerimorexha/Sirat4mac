@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Checks sirat4mac's prayer times against Sirat's own yearly calendar
+# Checks Sirat4mac's prayer times against Sirat's own yearly calendar
 # (prayer_times_<year>.json), day by day, including summer/winter time changes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -45,7 +45,7 @@ for line in open(sys.argv[2]):
     for key, ours in (p.split("=") for p in pairs):
         if ref[date][key] != ours:
             bad += 1
-            print(f"MISMATCH {date} {key}: sirat4mac {ours}, Sirat {ref[date][key]}")
+            print(f"MISMATCH {date} {key}: Sirat4mac {ours}, Sirat {ref[date][key]}")
 print(f"Checked {days} days: {bad} mismatches")
 sys.exit(1 if bad or not days else 0)
 EOF

@@ -1,4 +1,4 @@
-// sirat4mac — shows the next prayer time and the time left in the macOS menu bar.
+// Sirat4mac — shows the next prayer time and the time left in the macOS menu bar.
 // Prayer tables are read straight from the installed Sirat app, so they stay in
 // sync when Sirat updates.
 
@@ -208,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let t = takvim(), let (prayer, date) = nextPrayer(t, now: Date()) {
             title = "\(prayer.name) \(remainingText(date.timeIntervalSinceNow))"
         } else {
-            title = "sirat4mac ⚠︎"
+            title = "Sirat4mac ⚠︎"
         }
         if statusItem.button?.title != title {
             statusItem.button?.attributedTitle = NSAttributedString(string: title, attributes: [.font: font])
@@ -350,7 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(info("Burimi: Sirat \(version)"))
         }
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Mbyll sirat4mac", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Mbyll Sirat4mac", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
     }
