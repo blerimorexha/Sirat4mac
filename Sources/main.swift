@@ -4,6 +4,7 @@
 
 import Cocoa
 import ServiceManagement
+import UserNotifications
 
 let siratApp = "/Applications/Sirat.app"
 let siratDataDir = siratApp + "/Wrapper/Runner.app/Frameworks/App.framework/flutter_assets/assets/data"
@@ -13,16 +14,19 @@ let siratDataDir = siratApp + "/Wrapper/Runner.app/Frameworks/App.framework/flut
 struct PrayerDef {
     let key: String
     let name: String
+    let isPrayer: Bool   // sunrise ends a prayer time instead of starting one: no notification
 }
 
 let prayerDefs: [PrayerDef] = [
-    .init(key: "imsak",   name: "Imsaku"),
-    .init(key: "sunrise", name: "Lindja e diellit"),
-    .init(key: "dhuhr",   name: "Dreka"),
-    .init(key: "asr",     name: "Ikindia"),
-    .init(key: "maghrib", name: "Akshami"),
-    .init(key: "isha",    name: "Jacia"),
+    .init(key: "imsak",   name: "Imsaku",           isPrayer: true),
+    .init(key: "sunrise", name: "Lindja e diellit", isPrayer: false),
+    .init(key: "dhuhr",   name: "Dreka",            isPrayer: true),
+    .init(key: "asr",     name: "Ikindia",          isPrayer: true),
+    .init(key: "maghrib", name: "Akshami",          isPrayer: true),
+    .init(key: "isha",    name: "Jacia",            isPrayer: true),
 ]
+
+let notifyChoices = [5, 10, 15, 20, 30]
 
 struct ProfileDef {
     let id: String
@@ -113,12 +117,13 @@ final class Takvim {
 // MARK: - App
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
     var takvimCache: [String: Takvim] = [:]
     var timer: Timer?
     let defaults = UserDefaults.standard
+    var notificationsAllowed = true
 
     var profileId: String {
         get { defaults.string(forKey: "profile") ?? "bik" }
@@ -132,11 +137,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { defaults.integer(forKey: "adjust") }
         set { defaults.set(newValue, forKey: "adjust") }
     }
+    /// Minutes before a prayer to notify; 0 means off.
+    var notifyMinutes: Int {
+        get { defaults.integer(forKey: "notifyMinutes") }
+        set { defaults.set(newValue, forKey: "notifyMinutes") }
+    }
+    /// The prayer instance already notified, so each one is announced once.
+    var lastNotifiedId: String? {
+        get { defaults.string(forKey: "lastNotified") }
+        set { defaults.set(newValue, forKey: "lastNotified") }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
         menu.autoenablesItems = false
         statusItem.menu = menu
+
+        UNUserNotificationCenter.current().delegate = self
+        if notifyMinutes > 0 { requestNotificationPermission(openSettingsIfDenied: false) }
 
         // Start automatically at login the first time the app runs.
         if !defaults.bool(forKey: "didSetupLogin") {
@@ -174,13 +192,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func shift(for t: Takvim) -> Int { currentCity(in: t).offset + adjustMinutes }
 
     /// The next prayer (today, or tomorrow's Imsak) after `now`.
-    func nextPrayer(_ t: Takvim, now: Date) -> (PrayerDef, Date)? {
+    func nextPrayer(_ t: Takvim, now: Date, prayersOnly: Bool = false) -> (PrayerDef, Date)? {
         let shift = shift(for: t)
-        if let next = t.times(for: now, shiftMinutes: shift).first(where: { $0.1 > now }) {
+        let upcoming: ((PrayerDef, Date)) -> Bool = { $0.1 > now && (!prayersOnly || $0.0.isPrayer) }
+        if let next = t.times(for: now, shiftMinutes: shift).first(where: upcoming) {
             return next
         }
         guard let tomorrow = t.calendar.date(byAdding: .day, value: 1, to: now) else { return nil }
-        return t.times(for: tomorrow, shiftMinutes: shift).first { $0.1 > now }
+        return t.times(for: tomorrow, shiftMinutes: shift).first(where: upcoming)
+    }
+
+    /// The prayer to announce now: the next one, when it is at most `lead` minutes away.
+    func notificationDue(_ t: Takvim, now: Date, lead: Int) -> (PrayerDef, Date)? {
+        guard lead > 0, let next = nextPrayer(t, now: now, prayersOnly: true),
+              next.1.timeIntervalSince(now) <= TimeInterval(lead * 60) else { return nil }
+        return next
+    }
+
+    // MARK: Notifications
+
+    func checkNotification(_ t: Takvim, now: Date) {
+        guard let (prayer, date) = notificationDue(t, now: now, lead: notifyMinutes) else { return }
+        let id = "\(prayer.key)-\(Int(date.timeIntervalSince1970))"
+        guard id != lastNotifiedId else { return }
+        lastNotifiedId = id
+        postNotification(id: id, title: "\(prayer.name) edhe \(remainingText(date.timeIntervalSince(now)))",
+                         body: "Hyrja e kohës: \(clock(date, t))")
+    }
+
+    func postNotification(id: String, title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+    }
+
+    /// Asks macOS for permission (a prompt appears only the first time).
+    func requestNotificationPermission(openSettingsIfDenied: Bool = true,
+                                       then action: (@MainActor () -> Void)? = nil) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+            notificationsAllowed = granted
+            if granted {
+                action?()
+            } else if openSettingsIfDenied {
+                openNotificationSettings()
+            }
+        }
+    }
+
+    func updateNotificationStatus() {
+        Task {
+            let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+            notificationsAllowed = status == .authorized || status == .provisional
+        }
+    }
+
+    // Show banners even while the menu is open.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            willPresent notification: UNNotification,
+                                            withCompletionHandler completionHandler:
+                                            @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound])
     }
 
     // MARK: Formatting
@@ -205,8 +280,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize,
                                                     weight: .regular)
         let title: String
-        if let t = takvim(), let (prayer, date) = nextPrayer(t, now: Date()) {
-            title = "\(prayer.name) \(remainingText(date.timeIntervalSinceNow))"
+        let now = Date()
+        if let t = takvim(), let (prayer, date) = nextPrayer(t, now: now) {
+            title = "\(prayer.name) \(remainingText(date.timeIntervalSince(now)))"
+            checkNotification(t, now: now)
         } else {
             title = "Sirat4mac ⚠︎"
         }
@@ -219,6 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         refresh()
+        updateNotificationStatus()
         menu.removeAllItems()
         let now = Date()
 
@@ -277,6 +355,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(info(place))
         menu.addItem(profileMenu())
         menu.addItem(adjustMenu())
+        menu.addItem(notifyMenu())
+        if notifyMinutes > 0 && !notificationsAllowed {
+            let warn = NSMenuItem(title: "⚠︎ Njoftimet janë të ndaluara – lejoji këtu",
+                                  action: #selector(openNotificationSettings), keyEquivalent: "")
+            warn.target = self
+            menu.addItem(warn)
+        }
         menu.addItem(.separator())
         addFooter(to: menu)
     }
@@ -334,6 +419,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return root
     }
 
+    func notifyMenu() -> NSMenuItem {
+        let title = notifyMinutes > 0 ? "Njoftim \(notifyMinutes) min para vaktit" : "Njoftim para vaktit (joaktiv)"
+        let root = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for m in [0] + notifyChoices {
+            let item = NSMenuItem(title: m == 0 ? "Pa njoftim" : "\(m) min para vaktit",
+                                  action: #selector(pickNotify(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = m
+            item.state = m == notifyMinutes ? .on : .off
+            sub.addItem(item)
+        }
+        sub.addItem(.separator())
+        let test = NSMenuItem(title: "Dërgo një njoftim provë", action: #selector(sendTestNotification),
+                              keyEquivalent: "")
+        test.target = self
+        sub.addItem(test)
+        root.submenu = sub
+        return root
+    }
+
     func addFooter(to menu: NSMenu) {
         let open = NSMenuItem(title: "Hap Sirat", action: #selector(openSirat), keyEquivalent: "")
         open.target = self
@@ -367,6 +473,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func pickAdjust(_ sender: NSMenuItem) {
         adjustMinutes = sender.tag
         refresh()
+    }
+
+    @objc func pickNotify(_ sender: NSMenuItem) {
+        notifyMinutes = sender.tag
+        if sender.tag > 0 { requestNotificationPermission() }
+        refresh()
+    }
+
+    @objc func sendTestNotification() {
+        requestNotificationPermission { [self] in
+            guard let t = takvim(), let (prayer, date) = nextPrayer(t, now: Date(), prayersOnly: true) else { return }
+            let lead = notifyMinutes > 0 ? notifyMinutes : 15
+            postNotification(id: "test-\(Date().timeIntervalSince1970)",
+                             title: "\(prayer.name) edhe \(lead) min",
+                             body: "Hyrja e kohës: \(clock(date, t)) · (njoftim provë)")
+        }
+    }
+
+    @objc func openNotificationSettings() {
+        let id = Bundle.main.bundleIdentifier ?? ""
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @objc func openSirat() {

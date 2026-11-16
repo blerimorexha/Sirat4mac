@@ -13,6 +13,9 @@ Në shirit duket kështu: `Akshami 49 min`
 - Përdor takvimet që i ka Sirat: Kosovë (BIK, Prishtinë), Shqipëri (KMSH, me qytete),
   Maqedoni e Veriut (me qytete) dhe Mali i Zi (Podgoricë).
 - Kohët mund t'i korrigjosh me minuta për qytetin tënd (nga −10 deri në +10).
+- Njoftim para vaktit (opsional): zgjidh 5, 10, 15, 20 ose 30 minuta te **Njoftim para vaktit**,
+  p.sh. `Akshami edhe 15 min`. Vlen për Imsakun, Drekën, Ikindinë, Akshamin dhe Jacinë.
+  Herën e parë macOS kërkon leje për njoftimet: kliko **Lejo**.
 - Ora verore dhe dimërore llogariten vetë.
 - Hapet vetë kur ndizet Mac-u (mund ta çaktivizosh nga lista).
 - Nuk lidhet me internet.
